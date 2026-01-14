@@ -413,3 +413,6 @@ local.settings.json
 
 # Dotnet tools
 .dotnet/
+
+# Others
+*[Pp][Rr][Oo][Mm][Pp][Tt]*

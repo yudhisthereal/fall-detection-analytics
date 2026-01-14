@@ -1,6 +1,0 @@
-@FallDetection.Analytics_HostAddress = http://localhost:5098
-
-GET {{FallDetection.Analytics_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
