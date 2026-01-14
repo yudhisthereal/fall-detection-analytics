@@ -54,6 +54,16 @@ namespace FallDetection.Analytics.Services
 
         private readonly Random random = new();
 
+        // Pose data tracking (same as Python)
+        private Dictionary<string, object> _poseData = new();
+        private List<string> _status = new();
+
+        // Missing value constant
+        private const double MissingValue = -1;
+
+        // Fall detection service for consolidated fall detection logic
+        private readonly FallDetectionService _fallDetectionService;
+
         public PoseEstimationService()
         {
             // Calculate derived values
@@ -69,6 +79,9 @@ namespace FallDetection.Analytics.Services
 
             gu = (int)Math.Floor(u.GetBitLength() / 2.0);
             u1 = u / 2;
+
+            // Initialize fall detection service
+            _fallDetectionService = new FallDetectionService();
         }
 
         private class TrackHistory
@@ -214,21 +227,31 @@ namespace FallDetection.Analytics.Services
         {
             foreach (var kvp in keypoints)
             {
-                if (kvp.Value.x == -1 || kvp.Value.y == -1)
+                if (kvp.Value.x == MissingValue || kvp.Value.y == MissingValue)
                     return false;
             }
             return true;
         }
 
-        // Main pose analysis function - PRESERVING ALL ORIGINAL LOGIC
+        // Deque for keypoint averaging (same as Python keypoints_map_deque)
+        private readonly ConcurrentDictionary<string, Queue<Dictionary<string, (double x, double y)>>> _keypointsDeque = new();
+
+        // Main pose analysis function - MATCHES PYTHON IMPLEMENTATION
         public PoseData AnalyzePose(List<float> keypointsFlat, bool useHme = false)
         {
             try
             {
                 // Reshape to 17x2 (same as Python)
                 if (keypointsFlat.Count != 34) 
+                {
+                    _status = new List<string>();
+                    _poseData = new Dictionary<string, object>();
                     return new PoseData { Label = "None" };
+                }
 
+                // Create keypoints map from flat array (using COCO format indices: 0-16 for 17 keypoints)
+                // Indices: 5=Left Shoulder, 6=Right Shoulder, 11=Left Hip, 12=Right Hip, 
+                // 13=Left Knee, 14=Right Knee, 15=Left Ankle, 16=Right Ankle
                 var keypoints = new Dictionary<string, (double x, double y)>
                 {
                     ["Left Shoulder"] = (keypointsFlat[10], keypointsFlat[11]),
@@ -241,22 +264,58 @@ namespace FallDetection.Analytics.Services
                     ["Right Ankle"] = (keypointsFlat[32], keypointsFlat[33])
                 };
 
-                // Check if frame is complete
+                // Check if frame is complete (same as Python)
                 if (!IsFrameComplete(keypoints))
+                {
+                    _status = new List<string>();
+                    _poseData = new Dictionary<string, object>();
                     return new PoseData { Label = "None" };
+                }
+
+                // Get or create the keypoints deque for this camera/track
+                // For now using a single deque for simplicity (can be extended for multi-camera)
+                var dequeKey = "default";
+                var kpDeque = _keypointsDeque.GetOrAdd(dequeKey, _ => new Queue<Dictionary<string, (double x, double y)>>(QUEUE_SIZE));
+                
+                // Add current keypoints to deque (same as Python)
+                if (kpDeque.Count >= QUEUE_SIZE)
+                    kpDeque.Dequeue();
+                kpDeque.Enqueue(keypoints);
+
+                // Compute averaged keypoints (same as Python: km = {key: sum(...) / len(...) for key in ...})
+                var frameCount = kpDeque.Count;
+                if (frameCount == 0)
+                {
+                    _status = new List<string>();
+                    _poseData = new Dictionary<string, object>();
+                    return new PoseData { Label = "None" };
+                }
+
+                var km = new Dictionary<string, (double x, double y)>();
+                foreach (var key in keypoints.Keys)
+                {
+                    var sumX = 0.0;
+                    var sumY = 0.0;
+                    foreach (var frame in kpDeque)
+                    {
+                        sumX += frame[key].x;
+                        sumY += frame[key].y;
+                    }
+                    km[key] = (sumX / frameCount, sumY / frameCount);
+                }
 
                 // Compute centers (same as Python)
                 var shoulderCenter = (
-                    (keypoints["Left Shoulder"].x + keypoints["Right Shoulder"].x) / 2.0,
-                    (keypoints["Left Shoulder"].y + keypoints["Right Shoulder"].y) / 2.0);
+                    (km["Left Shoulder"].x + km["Right Shoulder"].x) / 2.0,
+                    (km["Left Shoulder"].y + km["Right Shoulder"].y) / 2.0);
                 var hipCenter = (
-                    (keypoints["Left Hip"].x + keypoints["Right Hip"].x) / 2.0,
-                    (keypoints["Left Hip"].y + keypoints["Right Hip"].y) / 2.0);
+                    (km["Left Hip"].x + km["Right Hip"].x) / 2.0,
+                    (km["Left Hip"].y + km["Right Hip"].y) / 2.0);
                 var kneeCenter = (
-                    (keypoints["Left Knee"].x + keypoints["Right Knee"].x) / 2.0,
-                    (keypoints["Left Knee"].y + keypoints["Right Knee"].y) / 2.0);
+                    (km["Left Knee"].x + km["Right Knee"].x) / 2.0,
+                    (km["Left Knee"].y + km["Right Knee"].y) / 2.0);
 
-                // Compute vectors
+                // Compute vectors (same as Python)
                 var torsoVec = (shoulderCenter.Item1 - hipCenter.Item1, shoulderCenter.Item2 - hipCenter.Item2);
                 var thighVec = (kneeCenter.Item1 - hipCenter.Item1, kneeCenter.Item2 - hipCenter.Item2);
                 var upVector = (0.0, -1.0);
@@ -266,7 +325,11 @@ namespace FallDetection.Analytics.Services
                 var thighNorm = Math.Sqrt(thighVec.Item1 * thighVec.Item1 + thighVec.Item2 * thighVec.Item2);
                 
                 if (torsoNorm == 0 || thighNorm == 0) 
+                {
+                    _status = new List<string>();
+                    _poseData = new Dictionary<string, object>();
                     return new PoseData { Label = "None" };
+                }
 
                 var torsoAngle = Math.Acos(Math.Clamp(
                     (torsoVec.Item1 * upVector.Item1 + torsoVec.Item2 * upVector.Item2) / 
@@ -278,9 +341,9 @@ namespace FallDetection.Analytics.Services
 
                 var thighUprightness = Math.Abs(thighAngle - 180.0);
 
-                // Calculate limb lengths
+                // Calculate limb lengths (same as Python)
                 var (thighCalfRatio, torsoLegRatio, thighLength, calfLength, torsoHeight, legLength) = 
-                    CalculateLimbLengths(keypoints);
+                    CalculateLimbLengths(km);
 
                 if (useHme)
                 {
@@ -313,9 +376,25 @@ namespace FallDetection.Analytics.Services
                         ["ll"] = (int)ll
                     };
 
+                    // Store pose data (same as Python self.pose_data)
+                    _poseData = new Dictionary<string, object>
+                    {
+                        ["label"] = null,  // Will be determined after HME processing
+                        ["torso_angle"] = torsoAngle,
+                        ["thigh_uprightness"] = thighUprightness,
+                        ["thigh_length"] = thighLength,
+                        ["calf_length"] = calfLength,
+                        ["torso_height"] = torsoHeight,
+                        ["leg_length"] = legLength,
+                        ["encrypted_features"] = encryptedFeatures,
+                        ["raw_int_values"] = rawIntValues
+                    };
+                    
+                    _status = new List<string> { "encrypted_features_ready" };
+
                     return new PoseData
                     {
-                        Label = null,  // Will be determined after HME processing
+                        Label = null,
                         TorsoAngle = torsoAngle,
                         ThighUprightness = thighUprightness,
                         ThighLength = thighLength,
@@ -352,6 +431,23 @@ namespace FallDetection.Analytics.Services
                         label = "lying_down";
                     }
 
+                    // Store pose data (same as Python self.pose_data)
+                    _poseData = new Dictionary<string, object>
+                    {
+                        ["label"] = label,
+                        ["torso_angle"] = torsoAngle,
+                        ["thigh_uprightness"] = thighUprightness,
+                        ["thigh_calf_ratio"] = thighCalfRatio,
+                        ["torso_leg_ratio"] = torsoLegRatio,
+                        ["thigh_angle"] = thighAngle,
+                        ["thigh_length"] = thighLength,
+                        ["calf_length"] = calfLength,
+                        ["torso_height"] = torsoHeight,
+                        ["leg_length"] = legLength
+                    };
+                    
+                    _status = new List<string> { label };
+
                     return new PoseData
                     {
                         Label = label,
@@ -370,8 +466,21 @@ namespace FallDetection.Analytics.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"Pose analysis error: {ex.Message}");
+                _status = new List<string>();
+                _poseData = new Dictionary<string, object>();
                 return new PoseData { Label = "None" };
             }
+        }
+
+        // Helper methods to get pose data and status (same as Python)
+        public Dictionary<string, object> GetPoseData()
+        {
+            return _poseData;
+        }
+
+        public List<string> GetStatus()
+        {
+            return _status;
         }
 
         // ==================== TRACK HISTORY MANAGEMENT ====================
@@ -442,218 +551,6 @@ namespace FallDetection.Analytics.Services
             var pointsQueue = trackHistory.Points[idx];
             
             return (bboxQueue.Peek(), pointsQueue.Peek());
-        }
-
-        // ==================== COMPLETE FALL DETECTION ====================
-
-        public FallDetectionResult DetectFall(string cameraId, int trackId, List<float> currentBbox, 
-                                              PoseData poseData, bool useHme)
-        {
-            try
-            {
-                // Check if we have enough history
-                if (!IsTrackHistoryReady(cameraId, trackId))
-                    return new FallDetectionResult();
-
-                var (previousBbox, _) = GetPreviousData(cameraId, trackId);
-                if (previousBbox.Count == 0 || currentBbox.Count < 4)
-                    return new FallDetectionResult();
-
-                // Calculate elapsed time (same as Python)
-                double elapsedMs = QUEUE_SIZE * 1000.0 / FPS;
-
-                // Calculate velocities (same as Python judge_fall.py)
-                double dyTop = currentBbox[1] - previousBbox[1];
-                double vTop = dyTop / elapsedMs;
-
-                double dh = previousBbox[3] - currentBbox[3];
-                double vHeight = dh / elapsedMs;
-
-                Console.WriteLine($"[DEBUG] v_top = {vTop:F6}, v_height = {vHeight:F6}, threshold = 0.43");
-
-                // Get pose data
-                double torsoAngle = 0;
-                double thighUprightness = 0;
-                string? label = null;
-
-                if (useHme)
-                {
-                    // HME mode handling
-                    if (poseData != null)
-                    {
-                        label = poseData.Label;
-                        var rawVals = poseData.RawIntValues;
-                        
-                        if (label == "lying_down")
-                        {
-                            torsoAngle = rawVals?.GetValueOrDefault("Tra", 0) / 100.0 ?? 85.0;
-                            thighUprightness = rawVals?.GetValueOrDefault("Tha", 0) / 100.0 ?? 70.0;
-                        }
-                        else
-                        {
-                            torsoAngle = 30.0;
-                            thighUprightness = 30.0;
-                        }
-                        
-                        Console.WriteLine($"[DEBUG HME] Approx torso_angle={torsoAngle}, thighUprightness={thighUprightness}, label={label}");
-                    }
-                }
-                else
-                {
-                    // Plain mode
-                    if (poseData != null)
-                    {
-                        torsoAngle = poseData.TorsoAngle;
-                        thighUprightness = poseData.ThighUprightness;
-                        label = poseData.Label;
-                        Console.WriteLine($"[DEBUG POSE] torso_angle={torsoAngle}, thighUprightness={thighUprightness}");
-                    }
-                }
-
-                // Calculate bbox motion evidence
-                double vBboxY = 0.43;
-                bool bboxMotionDetected = (vTop > vBboxY || vHeight > vBboxY);
-
-                // Calculate pose conditions (SAME AS PYTHON)
-                bool strictPoseCondition = false;
-                bool flexiblePoseCondition = false;
-
-                if (useHme)
-                {
-                    // In HME mode
-                    if (label == "lying_down")
-                    {
-                        flexiblePoseCondition = true;
-                        if (torsoAngle > 80 && thighUprightness > 60)
-                        {
-                            strictPoseCondition = true;
-                        }
-                    }
-                }
-                else
-                {
-                    // Plain mode (SAME AS judge_fall.py)
-                    if (torsoAngle > 0 && thighUprightness > 0)
-                    {
-                        // Strict condition: clearly lying down
-                        strictPoseCondition = (torsoAngle > 80 && thighUprightness > 60);
-                        
-                        // Flexible condition: various falling/lying positions
-                        if (torsoAngle > 80)
-                        {
-                            flexiblePoseCondition = true;
-                        }
-                        else if (30 < torsoAngle && torsoAngle < 80 && thighUprightness > 60)
-                        {
-                            flexiblePoseCondition = true;
-                        }
-                    }
-                }
-
-                // ========== ALGORITHM 1: BBox Only ==========
-                int counterBboxOnly = GetCounter(cameraId, trackId, "bbox_only");
-                
-                if (bboxMotionDetected)
-                {
-                    counterBboxOnly = Math.Min(FALL_COUNT_THRES, counterBboxOnly + 1);
-                }
-                else
-                {
-                    counterBboxOnly = Math.Max(0, counterBboxOnly - 1);
-                }
-                
-                UpdateCounter(cameraId, trackId, "bbox_only", counterBboxOnly);
-
-                // ========== ALGORITHM 2: BBox Motion AND Strict Pose ==========
-                int counterMotionPoseAnd = GetCounter(cameraId, trackId, "motion_pose_and");
-                
-                if (bboxMotionDetected && strictPoseCondition)
-                {
-                    // Strong evidence: both motion AND clearly lying down
-                    counterMotionPoseAnd = Math.Min(FALL_COUNT_THRES, counterMotionPoseAnd + 2);
-                }
-                else if (bboxMotionDetected || strictPoseCondition)
-                {
-                    // Moderate evidence: one or the other
-                    counterMotionPoseAnd = Math.Min(FALL_COUNT_THRES, counterMotionPoseAnd + 1);
-                }
-                else
-                {
-                    // No evidence
-                    counterMotionPoseAnd = Math.Max(0, counterMotionPoseAnd - 1);
-                }
-                
-                UpdateCounter(cameraId, trackId, "motion_pose_and", counterMotionPoseAnd);
-
-                // ========== ALGORITHM 3: Flexible Verification ==========
-                int algorithm3Counter = Math.Max(counterBboxOnly, counterMotionPoseAnd);
-                bool fallDetectedFlexible = false;
-
-                if (flexiblePoseCondition)
-                {
-                    if (algorithm3Counter >= FALL_COUNT_THRES)
-                    {
-                        fallDetectedFlexible = true;
-                        Console.WriteLine($"[FLEXIBLE VERIFICATION] Fall detected using flexible verification");
-                    }
-                }
-
-                // Determine fall status for each algorithm
-                bool fallDetectedBboxOnly = counterBboxOnly >= FALL_COUNT_THRES;
-                bool fallDetectedMotionPoseAnd = counterMotionPoseAnd >= FALL_COUNT_THRES;
-
-                if (fallDetectedBboxOnly)
-                    Console.WriteLine($"[ALGORITHM 1] Fall detected (BBox only, counter={counterBboxOnly})");
-                
-                if (fallDetectedMotionPoseAnd)
-                    Console.WriteLine($"[ALGORITHM 2] Fall detected (Motion+Pose AND, counter={counterMotionPoseAnd})");
-
-                return new FallDetectionResult
-                {
-                    FallDetectedMethod1 = fallDetectedBboxOnly,
-                    FallDetectedMethod2 = fallDetectedMotionPoseAnd,
-                    FallDetectedMethod3 = fallDetectedFlexible,
-                    CounterMethod1 = counterBboxOnly,
-                    CounterMethod2 = counterMotionPoseAnd,
-                    CounterMethod3 = algorithm3Counter,
-                    Algorithm3Counter = algorithm3Counter,
-                    PrimaryAlert = fallDetectedFlexible
-                };
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Fall detection error: {ex.Message}");
-                return new FallDetectionResult();
-            }
-        }
-
-        // ==================== COUNTER MANAGEMENT ====================
-
-        private const int FALL_COUNT_THRES = 2;
-        private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, ConcurrentDictionary<string, int>>> _counters = new();
-
-        private int GetCounter(string cameraId, int trackId, string counterType)
-        {
-            var cameraCounters = _counters.GetOrAdd(cameraId, _ => new ConcurrentDictionary<int, ConcurrentDictionary<string, int>>());
-            var trackCounters = cameraCounters.GetOrAdd(trackId, _ => new ConcurrentDictionary<string, int>());
-            return trackCounters.GetValueOrDefault(counterType, 0);
-        }
-
-        private void UpdateCounter(string cameraId, int trackId, string counterType, int value)
-        {
-            var cameraCounters = _counters.GetOrAdd(cameraId, _ => new ConcurrentDictionary<int, ConcurrentDictionary<string, int>>());
-            var trackCounters = cameraCounters.GetOrAdd(trackId, _ => new ConcurrentDictionary<string, int>());
-            trackCounters[counterType] = value;
-        }
-
-        public void ResetCounters(string cameraId, int trackId)
-        {
-            if (_counters.ContainsKey(cameraId) && _counters[cameraId].ContainsKey(trackId))
-            {
-                var trackCounters = _counters[cameraId][trackId];
-                trackCounters["bbox_only"] = Math.Max(0, trackCounters.GetValueOrDefault("bbox_only", 0) - 1);
-                trackCounters["motion_pose_and"] = Math.Max(0, trackCounters.GetValueOrDefault("motion_pose_and", 0) - 1);
-            }
         }
 
         // ==================== HME COMPARISONS ====================
@@ -777,7 +674,7 @@ namespace FallDetection.Analytics.Services
                 
                 if (poseData.Label == "None")
                 {
-                    ResetCounters(cameraId, trackId);
+                    _fallDetectionService.ResetCounters();
                     return new CompleteAnalysisResult
                     {
                         PoseData = poseData,
@@ -793,7 +690,22 @@ namespace FallDetection.Analytics.Services
                 
                 if (IsTrackHistoryReady(cameraId, trackId))
                 {
-                    fallResult = DetectFall(cameraId, trackId, bbox, poseData, useHme);
+                    var (previousBbox, _) = GetPreviousData(cameraId, trackId);
+                    
+                    // Create fall detection request using FallDetectionService
+                    var fallRequest = new FallDetectionRequest
+                    {
+                        CameraId = cameraId,
+                        TrackId = trackId,
+                        PoseData = poseData,
+                        CurrentBbox = bbox,
+                        PreviousBbox = previousBbox,
+                        PreviousKeypoints = new List<float>(),
+                        ElapsedMs = QUEUE_SIZE * 1000.0 / FPS,
+                        UseHme = useHme
+                    };
+                    
+                    fallResult = _fallDetectionService.DetectFall(fallRequest);
                     
                     // If using HME and we have encrypted features
                     if (useHme && poseData.EncryptedFeatures != null && poseData.EncryptedFeatures.Count > 0)

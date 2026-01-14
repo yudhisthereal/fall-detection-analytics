@@ -131,6 +131,13 @@ dotnet restore
 echo "Building project..."
 dotnet build --configuration Release --no-restore
 
+echo "Backing up ./publish/Data/ directory to ./backup/Data/..."
+if [ -d "./Data" ]; then
+  mkdir -p ./backup/Data/
+  cp -r ./publish/Data/* ./backup/Data/
+  echo "Data directory backed up"
+fi
+
 # Clean and publish the project
 echo "Cleaning existing publish directory..."
 rm -rf ./publish
@@ -138,11 +145,11 @@ rm -rf ./publish
 echo "Publishing project..."
 dotnet publish --configuration Release --no-build --output ./publish
 
-echo "Backing up Data directory to publish folder..."
+echo "Restoring ./backup/Data/ to ./publish/Data/..."
 if [ -d "./Data" ]; then
-  mkdir -p ./publish/Data
-  cp -r ./Data/* ./publish/Data/
-  echo "Data directory backed up to publish folder"
+  mkdir -p ./backup/Data/
+  cp -r ./backup/Data/* ./publish/Data/
+  echo -e "${GREEN}Data directory restored"
 fi
 
 echo -e "${YELLOW}Step 7: Updating systemd service for published app...${NC}"
