@@ -23,11 +23,10 @@ graph TD
         Req2[Forward Pass 2]
     end
 
-    subgraph Analytics Server [.NET 8 Core]
+    subgraph Analytics Server [Analytics Server (This)]
         API[Analytics Controller]
         HME1[EICR Computation]
         HME2[Polynomial Evaluation]
-        Fall[Fall Detection Engine]
         
         API --> HME1
         API --> HME2
