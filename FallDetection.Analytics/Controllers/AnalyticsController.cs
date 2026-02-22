@@ -17,30 +17,6 @@ namespace FallDetection.Analytics.Controllers
             _fallService = fallService;
         }
 
-        [HttpPost("analyze-pose")]
-        public IActionResult AnalyzePose([FromBody] PoseAnalysisRequest request)
-        {
-            try
-            {
-                var poseData = _poseService.AnalyzePose(request.Keypoints, request.UseHme);
-                return Ok(new
-                {
-                    status = "success",
-                    pose_data = poseData,
-                    camera_id = request.CameraId,
-                    track_id = request.TrackId
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    status = "error",
-                    message = ex.Message
-                });
-            }
-        }
-
         [HttpPost("detect-fall")]
         public IActionResult DetectFall([FromBody] FallDetectionRequest request)
         {
@@ -65,18 +41,38 @@ namespace FallDetection.Analytics.Controllers
             }
         }
 
-        [HttpPost("hme-comparisons")]
-        public IActionResult PerformHmeComparisons([FromBody] HmeComparisonRequest request)
+        [HttpPost("compute-intermediate")]
+        public IActionResult ComputeIntermediate([FromBody] EncryptedPoseFeatures request)
         {
             try
             {
-                var comparisonResults = _poseService.PerformHmeComparisons(request.EncryptedFeatures);
-                var poseLabel = _poseService.DecryptComparisonResults(comparisonResults);
-
-                return Ok(new HmeComparisonResult
+                var result = _poseService.ComputeIntermediateResults(request);
+                return Ok(new
                 {
-                    ComparisonResults = comparisonResults,
-                    PoseLabel = poseLabel
+                    status = "success",
+                    intermediate_results = result
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    status = "error",
+                    message = ex.Message
+                });
+            }
+        }
+
+        [HttpPost("evaluate-polynomial")]
+        public IActionResult EvaluatePolynomial([FromBody] EncryptedComparisonResults request)
+        {
+            try
+            {
+                var result = _poseService.EvaluatePolynomial(request);
+                return Ok(new
+                {
+                    status = "success",
+                    evaluation_result = result
                 });
             }
             catch (Exception ex)
