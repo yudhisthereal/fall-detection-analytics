@@ -17,27 +17,34 @@ This project is part of a distributed system:
 The Analytics Server is specifically tailored to process encrypted payloads without ever decrypting or learning the underlying patient data. It functions via a synchronous, multi-round interactive protocol with the Caregiver Node.
 
 ```mermaid
-graph TD
-    subgraph Caregiver Node [Streaming Server]
-        Req1[Forward Pass 1]
-        Req2[Forward Pass 2]
-    end
-
-    subgraph Analytics Server [.NET 8 Core]
-        API[Analytics Controller]
-        HME1[EICR Computation]
-        HME2[Polynomial Evaluation]
-        Fall[Fall Detection Engine]
-        
-        API --> HME1
-        API --> HME2
-        API --> Fall
-    end
-
-    Req1 -->|Encrypted Features| API
-    HME1 -->|Encrypted Intermediate Comparisons| Req1
-    Req2 -->|Re-encrypted Ciphertexts| API
-    HME2 -->|Encrypted Pose Result| Req2
+sequenceDiagram
+    participant Camera as Camera (Edge)
+    participant Caregiver as Streaming Server<br>(Caregiver Node)
+    participant Analytics as Analytics Server
+    
+    Note over Camera,Caregiver: 1. Feature Extraction
+    Camera->>Caregiver: POST 6 integer limb/torso features
+    
+    Note over Caregiver: 2. Local Encryption
+    Caregiver->>Caregiver: Truncate & encrypt features<br>with local multi-prime keys
+    
+    Note over Caregiver,Analytics: 3. Forward Pass 1
+    Caregiver->>Analytics: Send encrypted features
+    
+    Note over Analytics: 4. Interactive Protocol
+    Analytics->>Analytics: Compute Encrypted Intermediate<br>Comparison Result (EICR)
+    Analytics-->>Caregiver: Return EICR
+    Caregiver->>Caregiver: Partially decrypt & re-encrypt<br>for boolean comparisons
+    
+    Note over Caregiver,Analytics: 5. Forward Pass 2
+    Caregiver->>Analytics: Send new ciphertexts
+    
+    Note over Analytics: 6. Final Classification
+    Analytics->>Analytics: Polynomial Evaluation<br>(MSB/LSB)
+    Analytics-->>Caregiver: Return final encrypted result
+    
+    Note over Caregiver: Final Decryption
+    Caregiver->>Caregiver: Decrypt to pose-state<br>Attach label to track
 ```
 
 ### 1. Homomorphic Encryption (HME) Evaluation Protocol
