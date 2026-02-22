@@ -23,7 +23,7 @@ graph TD
         Req2[Forward Pass 2]
     end
 
-    subgraph Analytics Server [Analytics Server (This)]
+    subgraph Analytics Server ["Analytics Server (This)"]
         API[Analytics Controller]
         HME1[EICR Computation]
         HME2[Polynomial Evaluation]
