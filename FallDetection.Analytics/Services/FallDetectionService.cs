@@ -158,9 +158,9 @@ namespace FallDetection.Analytics.Services
                     PrimaryAlert = fallDetectedFlexible
                 };
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Console.WriteLine($"Fall detection error: {ex.Message}");
+                // Console.WriteLine($"Fall detection error: {ex.Message}");
                 return new FallDetectionResult();
             }
         }

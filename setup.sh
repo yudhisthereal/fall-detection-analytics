@@ -173,12 +173,19 @@ Environment="DOTNET_PRINT_TELEMETRY_MESSAGE=false"
 WantedBy=multi-user.target
 EOF
 
-if [ "$BUILD_ONLY" = false ]; then
-  echo -e "${YELLOW}Step 8: Starting the service...${NC}"
-  sudo systemctl daemon-reload
-  sudo systemctl enable $SERVICE_NAME
+echo -e "${YELLOW}Step 8: Reloading systemd and restarting service...${NC}"
+sudo systemctl daemon-reload
+sudo systemctl enable $SERVICE_NAME
+
+if sudo systemctl is-active --quiet $SERVICE_NAME; then
+  echo "Service is running. Restarting $SERVICE_NAME..."
+  sudo systemctl restart $SERVICE_NAME
+else
+  echo "Service is not running. Starting $SERVICE_NAME..."
   sudo systemctl start $SERVICE_NAME
-  
+fi
+
+if [ "$BUILD_ONLY" = false ]; then
   echo -e "${YELLOW}Step 9: Verifying service status...${NC}"
   sudo systemctl status $SERVICE_NAME --no-pager
   
@@ -195,8 +202,6 @@ else
   echo -e "${GREEN}=== Build Complete! ===${NC}"
   echo -e "Project published to: $PROJECT_DIR/$PROJECT_NAME/publish"
   echo -e "Current directory: $(pwd)"
-  echo -e "To start the service manually:"
-  echo -e "  sudo systemctl daemon-reload"
-  echo -e "  sudo systemctl enable $SERVICE_NAME"
-  echo -e "  sudo systemctl start $SERVICE_NAME"
+  echo -e "Service reloaded and started: $SERVICE_NAME"
+  echo -e "Service status: sudo systemctl status $SERVICE_NAME"
 fi
