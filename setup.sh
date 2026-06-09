@@ -13,6 +13,9 @@ PROJECT_DIR="/opt/fall-detection-analytics"
 PROJECT_NAME="FallDetection.Analytics"
 SERVICE_NAME="fall-detection-analytics"
 PORT=5000
+DISTRO="auto"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_PROJECT_DIR="$SCRIPT_DIR/$PROJECT_NAME"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -25,13 +28,38 @@ while [[ $# -gt 0 ]]; do
       PROJECT_DIR="$2"
       shift 2
       ;;
+    --distro)
+      DISTRO="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--build-only] [--project-dir /path/to/project]"
+      echo "Usage: $0 [--build-only] [--project-dir /path/to/project] [--distro ubuntu|debian]"
       exit 1
       ;;
   esac
 done
+
+if [[ "$DISTRO" == "auto" ]]; then
+  if [[ -r /etc/os-release ]]; then
+    . /etc/os-release
+    DISTRO="${ID:-auto}"
+  fi
+fi
+
+DOTNET_CMD="$(command -v dotnet || true)"
+if [[ -z "$DOTNET_CMD" ]]; then
+  DOTNET_CMD="/usr/bin/dotnet"
+fi
+
+if [[ "$DISTRO" == "debian" ]]; then
+  DOTNET_REPO_URL="https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb"
+elif [[ "$DISTRO" == "ubuntu" ]]; then
+  DOTNET_REPO_URL="https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb"
+else
+  echo -e "${RED}Error: Unsupported distro '$DISTRO'. Use --distro ubuntu or --distro debian.${NC}"
+  exit 1
+fi
 
 echo -e "${GREEN}=== Fall Detection Analytics Server Setup ===${NC}"
 
@@ -44,7 +72,7 @@ if [ "$BUILD_ONLY" = false ]; then
   
   # Install .NET 8 SDK
   echo -e "${YELLOW}Installing .NET 8 SDK...${NC}"
-  wget https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+  wget "$DOTNET_REPO_URL" -O packages-microsoft-prod.deb
   sudo dpkg -i packages-microsoft-prod.deb
   rm packages-microsoft-prod.deb
   sudo apt-get update
@@ -59,15 +87,17 @@ if [ "$BUILD_ONLY" = false ]; then
   sudo mkdir -p $PROJECT_DIR
   sudo chown -R $USER:$USER $PROJECT_DIR
   
-  # Navigate to project directory
-  cd $PROJECT_DIR
-  
-  # Create .NET project
-  echo -e "${YELLOW}Creating ASP.NET Core WebAPI project...${NC}"
-  dotnet new webapi -n $PROJECT_NAME --framework net8.0
-  
+  if [ ! -f "$SOURCE_PROJECT_DIR/FallDetection.Analytics.csproj" ]; then
+    echo -e "${RED}Error: Source project not found at $SOURCE_PROJECT_DIR${NC}"
+    exit 1
+  fi
+
+  echo -e "${YELLOW}Copying application source into $PROJECT_DIR...${NC}"
+  rm -rf "$PROJECT_DIR/$PROJECT_NAME"
+  cp -a "$SOURCE_PROJECT_DIR" "$PROJECT_DIR/"
+
   # Navigate into project
-  cd $PROJECT_NAME
+  cd "$PROJECT_DIR/$PROJECT_NAME"
   
   echo -e "${YELLOW}Step 3: Configuring firewall...${NC}"
   sudo ufw allow $PORT/tcp
@@ -89,7 +119,7 @@ After=network.target
 Type=exec
 User=$USER
 WorkingDirectory=$PROJECT_DIR/$PROJECT_NAME
-ExecStart=/usr/bin/dotnet run --urls http://0.0.0.0:$PORT
+ExecStart=$DOTNET_CMD run --urls http://0.0.0.0:$PORT
 Restart=always
 RestartSec=10
 KillSignal=SIGINT
@@ -162,7 +192,7 @@ After=network.target
 Type=exec
 User=$USER
 WorkingDirectory=$PROJECT_DIR/$PROJECT_NAME/publish
-ExecStart=/usr/bin/dotnet FallDetection.Analytics.dll --urls http://0.0.0.0:$PORT
+ExecStart=$DOTNET_CMD FallDetection.Analytics.dll --urls http://0.0.0.0:$PORT
 Restart=always
 RestartSec=10
 KillSignal=SIGINT
