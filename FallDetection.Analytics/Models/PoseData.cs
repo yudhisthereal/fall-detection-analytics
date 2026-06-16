@@ -5,22 +5,22 @@ namespace FallDetection.Analytics.Models
     // ------------------------------------------------------------
     public class EncryptedPoseFeatures
     {
-        public required List<string> Tra { get; set; }
-        public required List<string> Tha { get; set; }
-        public required List<string> Thl { get; set; }
-        public required List<string> Cl { get; set; }
-        public required List<string> Trl { get; set; }
-        public required List<string> Ll { get; set; }
+        public required string[] Tra { get; set; }
+        public required string[] Tha { get; set; }
+        public required string[] Thl { get; set; }
+        public required string[] Cl { get; set; }
+        public required string[] Trl { get; set; }
+        public required string[] Ll { get; set; }
     }
 
     public class EncryptedIntermediateResults
     {
-        public required List<string> T30 { get; set; }
-        public required List<string> T40 { get; set; }
-        public required List<string> T80 { get; set; }
-        public required List<string> T60 { get; set; }
-        public required List<string> TC { get; set; }
-        public required List<string> TL { get; set; }
+        public required string[] T30 { get; set; }
+        public required string[] T40 { get; set; }
+        public required string[] T80 { get; set; }
+        public required string[] T60 { get; set; }
+        public required string[] TC { get; set; }
+        public required string[] TL { get; set; }
     }
 
     // ------------------------------------------------------------
@@ -28,17 +28,17 @@ namespace FallDetection.Analytics.Models
     // ------------------------------------------------------------
     public class EncryptedComparisonResults
     {
-        public required List<string> CompA { get; set; } // Length 6: c11 to c61
-        public required List<string> CompB { get; set; }
-        public required List<string> CompC { get; set; }
-        public required List<string> CompD { get; set; } // TC
-        public required List<string> CompE { get; set; } // TL
-        public required List<string> CompF { get; set; } // T60
+        public required string[] CompA { get; set; } // Length 6: p1 residues for c11..c61
+        public required string[] CompB { get; set; } // Length 6: q1 residues for c21..c62
+        public required string[] CompC { get; set; } // Length 6: r residues for c31..c63
+        public required string[] CompD { get; set; } // Length 6: s residues (TC)
+        public required string[] CompE { get; set; } // Length 6: t residues (TL)
+        public required string[] CompF { get; set; } // Length 6: w residues (T60)
     }
 
     public class EvaluationResult
     {
-        public required List<string> PolynomialResults { get; set; }
+        public required string[] PolynomialResults { get; set; }
     }
 
     public class PoseAnalysisRequest

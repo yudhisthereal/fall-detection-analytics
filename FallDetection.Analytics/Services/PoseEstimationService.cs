@@ -24,12 +24,12 @@ namespace FallDetection.Analytics.Services
             _logger.LogInformation("HME Step 3 started: computing encrypted intermediate comparison results (EICR).");
             _logger.LogInformation(
                 "HME input summary - TRA count: {TraCount}, THA count: {ThaCount}, THL count: {ThlCount}, CL count: {ClCount}, TRL count: {TrlCount}, LL count: {LlCount}.",
-                req.Tra?.Count ?? 0,
-                req.Tha?.Count ?? 0,
-                req.Thl?.Count ?? 0,
-                req.Cl?.Count ?? 0,
-                req.Trl?.Count ?? 0,
-                req.Ll?.Count ?? 0
+                req.Tra?.Length ?? 0,
+                req.Tha?.Length ?? 0,
+                req.Thl?.Length ?? 0,
+                req.Cl?.Length ?? 0,
+                req.Trl?.Length ?? 0,
+                req.Ll?.Length ?? 0
             );
 
             if (req.Tra == null || req.Tha == null || req.Thl == null || req.Cl == null || req.Trl == null || req.Ll == null)
@@ -38,24 +38,44 @@ namespace FallDetection.Analytics.Services
                 throw new ArgumentException("Encrypted pose feature lists must not be null.", nameof(req));
             }
 
-            if (req.Tra.Count < 2 || req.Tha.Count < 2 || req.Thl.Count < 2 || req.Cl.Count < 2 || req.Trl.Count < 2 || req.Ll.Count < 2)
+            if (req.Tra.Length != 2 || req.Tha.Length != 2 || req.Thl.Length != 2 || req.Cl.Length != 2 || req.Trl.Length != 2 || req.Ll.Length != 2)
             {
-                _logger.LogWarning("HME Step 3 aborted: one or more encrypted feature lists do not contain the minimum required 2 values.");
-                throw new ArgumentException("Each encrypted pose feature list must contain at least 2 values.", nameof(req));
+                _logger.LogWarning("HME Step 3 aborted: one or more encrypted feature lists do not contain exactly 2 values.");
+                throw new ArgumentException("Each encrypted pose feature list must contain exactly 2 values.", nameof(req));
             }
 
-            var t30 = PrivCompAn(req.Tra, 3000);
+            // Parse encrypted values as BigInteger
+            BigInteger tra1 = BigInteger.Parse(req.Tra[0]);
+            BigInteger tra2 = BigInteger.Parse(req.Tra[1]);
+            BigInteger tha1 = BigInteger.Parse(req.Tha[0]);
+            BigInteger tha2 = BigInteger.Parse(req.Tha[1]);
+            BigInteger thl1 = BigInteger.Parse(req.Thl[0]);
+            BigInteger thl2 = BigInteger.Parse(req.Thl[1]);
+            BigInteger cl1 = BigInteger.Parse(req.Cl[0]);
+            BigInteger cl2 = BigInteger.Parse(req.Cl[1]);
+            BigInteger trl1 = BigInteger.Parse(req.Trl[0]);
+            BigInteger trl2 = BigInteger.Parse(req.Trl[1]);
+            BigInteger ll1 = BigInteger.Parse(req.Ll[0]);
+            BigInteger ll2 = BigInteger.Parse(req.Ll[1]);
+
+            var t30 = PrivCompAn(tra1, tra2, 3000);
             _logger.LogInformation("HME EICR metric T30 complete.");
-            var t40 = PrivCompAn(req.Tha, 4000);
+            
+            var t40 = PrivCompAn(tha1, tha2, 4000);
             _logger.LogInformation("HME EICR metric T40 complete.");
-            var t80 = PrivCompAn(req.Tra, 8000);
+            
+            var t80 = PrivCompAn(tra1, tra2, 8000);
             _logger.LogInformation("HME EICR metric T80 complete.");
-            var t60 = PrivCompAn(req.Tha, 6000);
+            
+            var t60 = PrivCompAn(tha1, tha2, 6000);
             _logger.LogInformation("HME EICR metric T60 complete.");
             
-            var tc = PrivComp1An(req.Thl[0], req.Thl[1], req.Cl[0], req.Cl[1], 10, 7);
+            // TC: thigh < calf? (Thl * 10 vs cl * 7)
+            var tc = PrivComp1An(thl1 * 10, thl2 * 10, cl1 * 7, cl2 * 7);
             _logger.LogInformation("HME EICR metric TC complete.");
-            var tl = PrivComp1An(req.Trl[0], req.Trl[1], req.Ll[0], req.Ll[1], 10, 5);
+            
+            // TL: torso < leg? (Trl * 10 vs ll * 5)
+            var tl = PrivComp1An(trl1 * 10, trl2 * 10, ll1 * 5, ll2 * 5);
             _logger.LogInformation("HME EICR metric TL complete.");
 
             _logger.LogInformation("HME Step 3 finished: all EICR metrics generated.");
@@ -71,23 +91,22 @@ namespace FallDetection.Analytics.Services
             };
         }
 
-        private List<string> PrivCompAn(List<string> cthStr, long cs)
+        /// <summary>
+        /// Server-side comparison with plaintext threshold
+        /// Used for: Comparing encrypted value with threshold
+        /// Matches Python _priv_comp_an(cth1, cth2, cs)
+        /// </summary>
+        private List<string> PrivCompAn(BigInteger cth1, BigInteger cth2, long cs)
         {
             _logger.LogInformation("HME PrivCompAn started with threshold {Threshold}.", cs);
             long r1 = NextLong(1, (1L << 22) - 1);
             long r2 = NextLong(1, (1L << 10) - 1);
             _logger.LogDebug("HME PrivCompAn randomness generated: r1={R1}, r2={R2}.", r1, r2);
 
-            BigInteger cth0 = BigInteger.Parse(cthStr[0]);
-            BigInteger cth1 = BigInteger.Parse(cthStr[1]);
-            _logger.LogDebug(
-                "HME PrivCompAn parsed encrypted features: cth0={Cth0}, cth1={Cth1}.",
-                FormatBigInteger(cth0),
-                FormatBigInteger(cth1)
-            );
-
-            BigInteger c111 = r2 + (r1 * 2 * (cth0 - cs));
-            BigInteger c121 = r2 + (r1 * 2 * (cth1 - cs));
+            // c111 = r2 + (r1 * 2 * (cth1 - cs))
+            // c121 = r2 + (r1 * 2 * (cth2 - cs))
+            BigInteger c111 = r2 + (r1 * 2 * (cth1 - cs));
+            BigInteger c121 = r2 + (r1 * 2 * (cth2 - cs));
             _logger.LogDebug(
                 "HME PrivCompAn output values computed: c111={C111}, c121={C121}.",
                 FormatBigInteger(c111),
@@ -98,25 +117,20 @@ namespace FallDetection.Analytics.Services
             return new List<string> { c111.ToString(), c121.ToString() };
         }
 
-        private List<string> PrivComp1An(string cth11Str, string cth21Str, string cth3Str, string cth4Str, long factor1, long factor2)
+        /// <summary>
+        /// Server-side encrypted vs encrypted comparison
+        /// Used for: Comparing two encrypted values
+        /// Matches Python _priv_comp1_an(cth11, cth21, cth3, cth4)
+        /// </summary>
+        private List<string> PrivComp1An(BigInteger cth11, BigInteger cth21, BigInteger cth3, BigInteger cth4)
         {
-            _logger.LogInformation("HME PrivComp1An started with factors factor1={Factor1}, factor2={Factor2}.", factor1, factor2);
+            _logger.LogInformation("HME PrivComp1An started.");
             long r1 = NextLong(1, (1L << 22) - 1);
             long r2 = NextLong(1, (1L << 10) - 1);
             _logger.LogDebug("HME PrivComp1An randomness generated: r1={R1}, r2={R2}.", r1, r2);
 
-            BigInteger cth11 = BigInteger.Parse(cth11Str) * factor1;
-            BigInteger cth21 = BigInteger.Parse(cth21Str) * factor1;
-            BigInteger cth3 = BigInteger.Parse(cth3Str) * factor2;
-            BigInteger cth4 = BigInteger.Parse(cth4Str) * factor2;
-            _logger.LogDebug(
-                "HME PrivComp1An scaled values: cth11={Cth11}, cth21={Cth21}, cth3={Cth3}, cth4={Cth4}.",
-                FormatBigInteger(cth11),
-                FormatBigInteger(cth21),
-                FormatBigInteger(cth3),
-                FormatBigInteger(cth4)
-            );
-
+            // c11 = r2 + (r1 * 2 * (cth11 - cth3))
+            // c12 = r2 + (r1 * 2 * (cth21 - cth4))
             BigInteger c11 = r2 + (r1 * 2 * (cth11 - cth3));
             BigInteger c12 = r2 + (r1 * 2 * (cth21 - cth4));
             _logger.LogDebug(
@@ -151,12 +165,12 @@ namespace FallDetection.Analytics.Services
             var pr = new List<string>();
             _logger.LogInformation(
                 "HME polynomial input summary - A:{A}, B:{B}, C:{C}, D:{D}, E:{E}, F:{F}.",
-                comp.CompA?.Count ?? 0,
-                comp.CompB?.Count ?? 0,
-                comp.CompC?.Count ?? 0,
-                comp.CompD?.Count ?? 0,
-                comp.CompE?.Count ?? 0,
-                comp.CompF?.Count ?? 0
+                comp.CompA?.Length ?? 0,
+                comp.CompB?.Length ?? 0,
+                comp.CompC?.Length ?? 0,
+                comp.CompD?.Length ?? 0,
+                comp.CompE?.Length ?? 0,
+                comp.CompF?.Length ?? 0
             );
 
             if (comp.CompA == null || comp.CompB == null || comp.CompC == null || comp.CompD == null || comp.CompE == null || comp.CompF == null)
@@ -165,22 +179,23 @@ namespace FallDetection.Analytics.Services
                 throw new ArgumentException("Polynomial comparison arrays must not be null.", nameof(comp));
             }
 
-            if (comp.CompA.Count < 6 || comp.CompB.Count < 6 || comp.CompC.Count < 6 || comp.CompD.Count < 6 || comp.CompE.Count < 6 || comp.CompF.Count < 6)
+            if (comp.CompA.Length != 6 || comp.CompB.Length != 6 || comp.CompC.Length != 6 || comp.CompD.Length != 6 || comp.CompE.Length != 6 || comp.CompF.Length != 6)
             {
-                _logger.LogWarning("HME Step 5 aborted: one or more polynomial comparison arrays do not contain the required 6 values.");
-                throw new ArgumentException("Each polynomial comparison array must contain at least 6 values.", nameof(comp));
+                _logger.LogWarning("HME Step 5 aborted: one or more polynomial comparison arrays do not contain exactly 6 values.");
+                throw new ArgumentException("Each polynomial comparison array must contain exactly 6 values.", nameof(comp));
             }
             
             for (int i = 0; i < 6; i++)
             {
                 _logger.LogInformation("HME polynomial iteration {Iteration} started.", i);
                 // Parse BigInteger from the strings provided by Caregiver
-                BigInteger c1 = BigInteger.Parse(comp.CompA[i]);
-                BigInteger c2 = BigInteger.Parse(comp.CompB[i]);
-                BigInteger c3 = BigInteger.Parse(comp.CompC[i]);
-                BigInteger c4 = BigInteger.Parse(comp.CompD[i]);
-                BigInteger c5 = BigInteger.Parse(comp.CompE[i]);
-                BigInteger c6 = BigInteger.Parse(comp.CompF[i]);
+                // a = T30, b = T40, c = T80, d = TC, e = TL, f = T60
+                BigInteger c1 = BigInteger.Parse(comp.CompA[i]); // a = T30
+                BigInteger c2 = BigInteger.Parse(comp.CompB[i]); // b = T40
+                BigInteger c3 = BigInteger.Parse(comp.CompC[i]); // c = T80
+                BigInteger c4 = BigInteger.Parse(comp.CompD[i]); // d = TC
+                BigInteger c5 = BigInteger.Parse(comp.CompE[i]); // e = TL
+                BigInteger c6 = BigInteger.Parse(comp.CompF[i]); // f = T60
                 _logger.LogDebug(
                     "HME polynomial iteration {Iteration} inputs parsed: c1={C1}, c2={C2}, c3={C3}, c4={C4}, c5={C5}, c6={C6}.",
                     i,
@@ -192,13 +207,13 @@ namespace FallDetection.Analytics.Services
                     FormatBigInteger(c6)
                 );
 
-                // LSB
+                // LSB = (a*b*d) + (a*(1-b)) + (1-c) + ((1-a)*c*(1-f))
                 BigInteger prl = (c1 * c2 * c4) + (c1 * (1 - c2)) + (1 - c3) + ((1 - c1) * c3 * (1 - c6));
                 
-                // MSB
+                // MSB = (a*b*(1-d)*e) + ((1-a)*c*f) + (1-c) + ((1-a)*c*(1-f))
                 BigInteger prm = (c1 * c2 * (1 - c4) * c5) + ((1 - c1) * c3 * c6) + (1 - c3) + ((1 - c1) * c3 * (1 - c6));
                 
-                // Result
+                // Result = MSB*2 + LSB
                 BigInteger result = (prm * 2 + prl);
                 pr.Add(result.ToString());
                 _logger.LogInformation(
@@ -212,7 +227,7 @@ namespace FallDetection.Analytics.Services
 
             _logger.LogInformation("HME Step 5 finished: {ResultCount} polynomial outputs generated.", pr.Count);
 
-            return new EvaluationResult { PolynomialResults = pr };
+            return new EvaluationResult { PolynomialResults = pr.ToArray() };
         }
 
         private static string FormatBigInteger(BigInteger value)
@@ -224,4 +239,3 @@ namespace FallDetection.Analytics.Services
         }
     }
 }
-

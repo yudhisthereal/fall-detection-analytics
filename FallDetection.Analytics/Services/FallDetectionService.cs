@@ -5,6 +5,8 @@ namespace FallDetection.Analytics.Services
     public class FallDetectionService
     {
         private const int FALL_COUNT_THRES = 2;
+        private const double BBOX_SHRINKAGE_THRESHOLD = 0.43;
+        private const double MIN_HEIGHT_DECREMENT_PX = 5.0;
 
         // Persistent counters for consecutive falls
         private int counterBboxOnly = 0;
@@ -18,93 +20,33 @@ namespace FallDetection.Analytics.Services
                 var poseData = request.PoseData;
                 var currentBbox = request.CurrentBbox;
                 var previousBbox = request.PreviousBbox;
-                var elapsedMs = request.ElapsedMs;
 
                 if (currentBbox.Count < 4 || previousBbox.Count < 4)
                 {
                     return new FallDetectionResult();
                 }
 
-                // 1. Vertical speed of top (y) coordinate
+                // 1. Vertical movement of top (y) coordinate — downward movement = positive
                 double dyTop = currentBbox[1] - previousBbox[1];
-                double vTop = dyTop / elapsedMs;
 
-                // 2. Vertical change of height (shrinking = falling)
-                double dh = previousBbox[3] - currentBbox[3];
-                double vHeight = dh / elapsedMs;
-
-                double torsoAngle = 0;
-                double thighUprightness = 0;
-                string? label = null;
-
-                if (request.UseHme)
+                // 2. Shrinkage of bbox height — only meaningful if the object moved downward
+                double heightDecrementPx = 0;
+                double shrinkage = 0;
+                if (dyTop > 0 && previousBbox[3] > 0)
                 {
-                    // HME mode handling
-                    if (poseData != null)
-                    {
-                        label = poseData.Label;
-                        var rawVals = poseData.RawIntValues;
-                        
-                        if (label == "lying_down")
-                        {
-                            torsoAngle = rawVals?.GetValueOrDefault("Tra", 0) / 100.0 ?? 85.0;
-                            thighUprightness = rawVals?.GetValueOrDefault("Tha", 0) / 100.0 ?? 70.0;
-                        }
-                        else
-                        {
-                            torsoAngle = 30.0;
-                            thighUprightness = 30.0;
-                        }
-                    }
-                }
-                else
-                {
-                    // Plain mode
-                    if (poseData != null)
-                    {
-                        torsoAngle = poseData.TorsoAngle;
-                        thighUprightness = poseData.ThighUprightness;
-                        label = poseData.Label;
-                    }
+                    heightDecrementPx = previousBbox[3] - currentBbox[3];
+                    shrinkage = heightDecrementPx / previousBbox[3];
                 }
 
-                // Calculate bbox motion evidence
-                double vBboxY = 0.43; // fallParam["v_bbox_y"]
-                bool bboxMotionDetected = (vTop > vBboxY || vHeight > vBboxY);
+                double torsoAngle = poseData?.TorsoAngle ?? 0;
+                double thighUprightness = poseData?.ThighUprightness ?? 0;
+                bool hasPose = poseData != null && torsoAngle > 0 && thighUprightness > 0;
+                bool strictPoseCondition = hasPose && torsoAngle > 80 && thighUprightness > 60;
 
-                // Calculate pose conditions
-                bool strictPoseCondition = false;
-                bool flexiblePoseCondition = false;
-
-                if (request.UseHme)
-                {
-                    // In HME mode
-                    if (label == "lying_down")
-                    {
-                        flexiblePoseCondition = true;
-                        if (torsoAngle > 80 && thighUprightness > 60)
-                        {
-                            strictPoseCondition = true;
-                        }
-                    }
-                }
-                else
-                {
-                    // Plain mode
-                    if (torsoAngle > 0 && thighUprightness > 0)
-                    {
-                        strictPoseCondition = (torsoAngle > 80 && thighUprightness > 60);
-                        
-                        if (torsoAngle > 80)
-                        {
-                            flexiblePoseCondition = true;
-                        }
-                        else if (30 < torsoAngle && torsoAngle < 80 && thighUprightness > 60)
-                        {
-                            flexiblePoseCondition = true;
-                        }
-                    }
-                }
+                // Match judge_fall.py: require downward motion, enough shrinkage, and a minimum pixel decrease.
+                bool bboxMotionDetected = dyTop > 0
+                                          && Math.Abs(shrinkage) > BBOX_SHRINKAGE_THRESHOLD
+                                          && heightDecrementPx > MIN_HEIGHT_DECREMENT_PX;
 
                 // Algorithm 1: BBox Only
                 if (bboxMotionDetected)
@@ -121,41 +63,26 @@ namespace FallDetection.Analytics.Services
                 {
                     counterMotionPoseAnd = Math.Min(FALL_COUNT_THRES, counterMotionPoseAnd + 2);
                 }
-                else if (bboxMotionDetected || strictPoseCondition)
-                {
-                    counterMotionPoseAnd = Math.Min(FALL_COUNT_THRES, counterMotionPoseAnd + 1);
-                }
                 else
                 {
                     counterMotionPoseAnd = Math.Max(0, counterMotionPoseAnd - 1);
                 }
 
-                // Algorithm 3: Flexible Verification
-                int algorithm3Counter = Math.Max(counterBboxOnly, counterMotionPoseAnd);
-                bool fallDetectedFlexible = false;
-
-                if (flexiblePoseCondition)
-                {
-                    if (algorithm3Counter >= FALL_COUNT_THRES)
-                    {
-                        fallDetectedFlexible = true;
-                    }
-                }
-
                 // Determine fall status for each algorithm
                 bool fallDetectedBboxOnly = counterBboxOnly >= FALL_COUNT_THRES;
                 bool fallDetectedMotionPoseAnd = counterMotionPoseAnd >= FALL_COUNT_THRES;
+                int algorithm3Counter = Math.Max(counterBboxOnly, counterMotionPoseAnd);
 
                 return new FallDetectionResult
                 {
                     FallDetectedMethod1 = fallDetectedBboxOnly,
                     FallDetectedMethod2 = fallDetectedMotionPoseAnd,
-                    FallDetectedMethod3 = fallDetectedFlexible,
+                    FallDetectedMethod3 = fallDetectedMotionPoseAnd,
                     CounterMethod1 = counterBboxOnly,
                     CounterMethod2 = counterMotionPoseAnd,
                     CounterMethod3 = algorithm3Counter,
                     Algorithm3Counter = algorithm3Counter,
-                    PrimaryAlert = fallDetectedFlexible
+                    PrimaryAlert = fallDetectedMotionPoseAnd
                 };
             }
             catch (Exception)
